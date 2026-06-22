@@ -53,9 +53,14 @@ private:
     std::unordered_map<const Decl*, int> currentDeclOffsets_;
     std::vector<int> currentParamOffsets_;
     std::string currentExitLabel_;
+    int dynamicStackDepth_ = 0;
 
     static int align16(int value) {
         return (value + 15) / 16 * 16;
+    }
+
+    static bool fitsI12(int value) {
+        return value >= -2048 && value <= 2047;
     }
 
     std::string nextLabel(const std::string& prefix) {
@@ -112,26 +117,30 @@ private:
     void collectDeclOffsets(const BlockStmt& block, std::unordered_map<const Decl*, int>& offsets,
                             int& slotIndex) {
         for (const auto& statement : block.statements) {
-            if (const auto* declStmt = dynamic_cast<const DeclStmt*>(statement.get())) {
-                offsets.emplace(declStmt->decl.get(), offsetForSlot(slotIndex));
-                ++slotIndex;
-            } else if (const auto* nestedBlock = dynamic_cast<const BlockStmt*>(statement.get())) {
-                collectDeclOffsets(*nestedBlock, offsets, slotIndex);
-            } else if (const auto* ifStmt = dynamic_cast<const IfStmt*>(statement.get())) {
-                if (const auto* thenBlock = dynamic_cast<const BlockStmt*>(ifStmt->thenBranch.get())) {
-                    collectDeclOffsets(*thenBlock, offsets, slotIndex);
-                }
-                if (ifStmt->elseBranch != nullptr) {
-                    if (const auto* elseBlock =
-                            dynamic_cast<const BlockStmt*>(ifStmt->elseBranch.get())) {
-                        collectDeclOffsets(*elseBlock, offsets, slotIndex);
-                    }
-                }
-            } else if (const auto* whileStmt = dynamic_cast<const WhileStmt*>(statement.get())) {
-                if (const auto* bodyBlock = dynamic_cast<const BlockStmt*>(whileStmt->body.get())) {
-                    collectDeclOffsets(*bodyBlock, offsets, slotIndex);
-                }
+            collectStmtOffsets(*statement, offsets, slotIndex);
+        }
+    }
+
+    void collectStmtOffsets(const Stmt& statement,
+                            std::unordered_map<const Decl*, int>& offsets, int& slotIndex) {
+        if (const auto* declStmt = dynamic_cast<const DeclStmt*>(&statement)) {
+            offsets.emplace(declStmt->decl.get(), offsetForSlot(slotIndex));
+            ++slotIndex;
+            return;
+        }
+        if (const auto* block = dynamic_cast<const BlockStmt*>(&statement)) {
+            collectDeclOffsets(*block, offsets, slotIndex);
+            return;
+        }
+        if (const auto* ifStmt = dynamic_cast<const IfStmt*>(&statement)) {
+            collectStmtOffsets(*ifStmt->thenBranch, offsets, slotIndex);
+            if (ifStmt->elseBranch != nullptr) {
+                collectStmtOffsets(*ifStmt->elseBranch, offsets, slotIndex);
             }
+            return;
+        }
+        if (const auto* whileStmt = dynamic_cast<const WhileStmt*>(&statement)) {
+            collectStmtOffsets(*whileStmt->body, offsets, slotIndex);
         }
     }
 
@@ -140,25 +149,26 @@ private:
         currentDeclOffsets_ = layout.declOffsets;
         currentParamOffsets_ = layout.paramOffsets;
         currentExitLabel_ = nextLabel(function.name + "_exit");
+        dynamicStackDepth_ = 0;
         scopes_.clear();
         loopLabels_.clear();
 
         emitLine("    .globl " + function.name);
         emitLine("    .type " + function.name + ", @function");
         emitLine(function.name + ":");
-        emitLine("    addi sp, sp, -" + std::to_string(layout.frameSize));
-        emitLine("    sw ra, " + std::to_string(layout.frameSize - 4) + "(sp)");
-        emitLine("    sw s0, " + std::to_string(layout.frameSize - 8) + "(sp)");
-        emitLine("    addi s0, sp, " + std::to_string(layout.frameSize));
+        emitAdjustSp(-layout.frameSize);
+        emitStoreWord("ra", layout.frameSize - 4, "sp");
+        emitStoreWord("s0", layout.frameSize - 8, "sp");
+        emitAddImmediate("s0", "sp", layout.frameSize);
 
         pushScope();
         for (std::size_t i = 0; i < function.params.size(); ++i) {
             const int offset = currentParamOffsets_[i];
             if (i < 8) {
-                emitLine("    sw a" + std::to_string(i) + ", " + std::to_string(offset) + "(s0)");
+                emitStoreWord("a" + std::to_string(i), offset, "s0");
             } else {
-                emitLine("    lw t0, " + std::to_string((i - 8) * 4) + "(s0)");
-                emitLine("    sw t0, " + std::to_string(offset) + "(s0)");
+                emitLoadWord("t0", static_cast<int>((i - 8) * 4), "s0");
+                emitStoreWord("t0", offset, "s0");
             }
             scopes_.back().emplace(function.params[i],
                                    Binding{Binding::Kind::LocalVar, offset, 0});
@@ -170,9 +180,9 @@ private:
             emitLine("    li a0, 0");
         }
         emitLine(currentExitLabel_ + ":");
-        emitLine("    lw ra, " + std::to_string(layout.frameSize - 4) + "(sp)");
-        emitLine("    lw s0, " + std::to_string(layout.frameSize - 8) + "(sp)");
-        emitLine("    addi sp, sp, " + std::to_string(layout.frameSize));
+        emitLoadWord("ra", layout.frameSize - 4, "sp");
+        emitLoadWord("s0", layout.frameSize - 8, "sp");
+        emitAdjustSp(layout.frameSize);
         emitLine("    ret");
         emitLine("    .size " + function.name + ", .-" + function.name);
 
@@ -321,13 +331,13 @@ private:
                 decl.name, Binding{Binding::Kind::LocalConst, offsetIt->second, value});
             if (!options_.enableOpt) {
                 emitLine("    li a0, " + std::to_string(value));
-                emitLine("    sw a0, " + std::to_string(offsetIt->second) + "(s0)");
+                emitStoreWord("a0", offsetIt->second, "s0");
             }
             return;
         }
 
         emitExpr(*decl.init);
-        emitLine("    sw a0, " + std::to_string(offsetIt->second) + "(s0)");
+        emitStoreWord("a0", offsetIt->second, "s0");
         scopes_.back().emplace(
             decl.name, Binding{Binding::Kind::LocalVar, offsetIt->second, 0});
     }
@@ -518,6 +528,12 @@ private:
         }
 
         if (const auto* call = dynamic_cast<const CallExpr*>(&expr)) {
+            const std::size_t stackArgs =
+                call->arguments.size() > 8 ? call->arguments.size() - 8 : 0;
+            const int stackArgBytes = static_cast<int>(stackArgs * 4);
+            const int padding = (16 - (dynamicStackDepth_ + stackArgBytes) % 16) % 16;
+            allocateDynamicStack(padding);
+
             for (std::size_t i = call->arguments.size(); i > 0; --i) {
                 emitExpr(*call->arguments[i - 1]);
                 pushA0();
@@ -525,17 +541,14 @@ private:
 
             const std::size_t registerArgs = std::min<std::size_t>(8, call->arguments.size());
             for (std::size_t i = 0; i < registerArgs; ++i) {
-                emitLine("    lw a" + std::to_string(i) + ", 0(sp)");
-                emitLine("    addi sp, sp, 4");
+                emitLoadWord("a" + std::to_string(i), 0, "sp");
+                releaseDynamicStack(4);
             }
 
             emitLine("    call " + call->callee);
 
-            const std::size_t stackArgs =
-                call->arguments.size() > 8 ? call->arguments.size() - 8 : 0;
-            if (stackArgs > 0) {
-                emitLine("    addi sp, sp, " + std::to_string(stackArgs * 4));
-            }
+            releaseDynamicStack(stackArgBytes);
+            releaseDynamicStack(padding);
             return;
         }
     }
@@ -549,7 +562,7 @@ private:
 
         switch (binding->kind) {
             case Binding::Kind::LocalVar:
-                emitLine("    lw a0, " + std::to_string(binding->offset) + "(s0)");
+                emitLoadWord("a0", binding->offset, "s0");
                 return;
             case Binding::Kind::LocalConst:
                 emitLine("    li a0, " + std::to_string(binding->constValue));
@@ -572,7 +585,7 @@ private:
 
         switch (binding->kind) {
             case Binding::Kind::LocalVar:
-                emitLine("    sw a0, " + std::to_string(binding->offset) + "(s0)");
+                emitStoreWord("a0", binding->offset, "s0");
                 return;
             case Binding::Kind::GlobalVar:
                 emitLine("    la t0, " + name);
@@ -585,13 +598,71 @@ private:
     }
 
     void pushA0() {
-        emitLine("    addi sp, sp, -4");
-        emitLine("    sw a0, 0(sp)");
+        allocateDynamicStack(4);
+        emitStoreWord("a0", 0, "sp");
     }
 
     void popToT0() {
-        emitLine("    lw t0, 0(sp)");
-        emitLine("    addi sp, sp, 4");
+        emitLoadWord("t0", 0, "sp");
+        releaseDynamicStack(4);
+    }
+
+    void emitAdjustSp(int amount) {
+        if (amount == 0) {
+            return;
+        }
+        if (fitsI12(amount)) {
+            emitLine("    addi sp, sp, " + std::to_string(amount));
+        } else {
+            emitLine("    li t2, " + std::to_string(amount));
+            emitLine("    add sp, sp, t2");
+        }
+    }
+
+    void emitAddImmediate(const std::string& destination, const std::string& source, int amount) {
+        if (fitsI12(amount)) {
+            emitLine("    addi " + destination + ", " + source + ", " +
+                     std::to_string(amount));
+        } else {
+            emitLine("    li t2, " + std::to_string(amount));
+            emitLine("    add " + destination + ", " + source + ", t2");
+        }
+    }
+
+    void emitLoadWord(const std::string& destination, int offset, const std::string& base) {
+        if (fitsI12(offset)) {
+            emitLine("    lw " + destination + ", " + std::to_string(offset) + "(" + base + ")");
+        } else {
+            emitLine("    li t2, " + std::to_string(offset));
+            emitLine("    add t2, " + base + ", t2");
+            emitLine("    lw " + destination + ", 0(t2)");
+        }
+    }
+
+    void emitStoreWord(const std::string& source, int offset, const std::string& base) {
+        if (fitsI12(offset)) {
+            emitLine("    sw " + source + ", " + std::to_string(offset) + "(" + base + ")");
+        } else {
+            emitLine("    li t2, " + std::to_string(offset));
+            emitLine("    add t2, " + base + ", t2");
+            emitLine("    sw " + source + ", 0(t2)");
+        }
+    }
+
+    void allocateDynamicStack(int bytes) {
+        if (bytes <= 0) {
+            return;
+        }
+        emitAdjustSp(-bytes);
+        dynamicStackDepth_ += bytes;
+    }
+
+    void releaseDynamicStack(int bytes) {
+        if (bytes <= 0) {
+            return;
+        }
+        emitAdjustSp(bytes);
+        dynamicStackDepth_ -= bytes;
     }
 };
 

@@ -1,0 +1,18 @@
+int value = 1;
+
+int pick(int value) {
+    int result = value;
+    {
+        const int value = 4;
+        result = result + value;
+        {
+            int value = 8;
+            result = result + value;
+        }
+    }
+    return result;
+}
+
+int main() {
+    return pick(2);
+}

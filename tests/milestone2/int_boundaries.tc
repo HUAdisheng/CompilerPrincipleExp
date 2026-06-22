@@ -1,0 +1,5 @@
+int main() {
+    const int maximum = 2147483647;
+    const int minimum = -2147483647 - 1;
+    return maximum == 2147483647 && minimum == -2147483648;
+}

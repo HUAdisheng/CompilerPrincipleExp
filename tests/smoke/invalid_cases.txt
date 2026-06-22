@@ -13,3 +13,16 @@ tests/milestone6/error_redefine_global.tc|semantic error: redefinition of global
 tests/milestone6/error_redefine_local.tc|semantic error: redefinition of local name a
 tests/milestone6/error_param_count.tc|semantic error: function f expects 2 arguments
 tests/milestone6/error_redefine_function.tc|semantic error: redefinition of global name f
+tests/milestone6/error_void_condition.tc|if condition must have int type
+tests/milestone6/error_void_assignment.tc|assignment value must have int type
+tests/milestone6/error_void_argument.tc|function argument must have int type
+tests/milestone6/error_use_before_declaration.tc|use of undeclared identifier missing
+tests/milestone6/error_global_use_before_declaration.tc|use of undeclared identifier later
+tests/milestone6/error_duplicate_parameter.tc|duplicate parameter name value
+tests/milestone6/error_function_global_collision.tc|redefinition of global name value
+tests/milestone6/error_function_as_value.tc|use of undeclared identifier helper
+tests/milestone6/error_const_short_circuit_variable.tc|const initializer must be a compile-time constant expression
+tests/milestone6/error_global_short_circuit_variable.tc|global initializer must be a compile-time constant expression
+tests/milestone6/error_int_empty_return.tc|int function helper must return an int value
+tests/milestone6/error_assign_global_const.tc|cannot assign to const identifier value
+tests/milestone6/error_void_return_to_int.tc|return expression must have int type

@@ -1,0 +1,7 @@
+void action() {
+    return;
+}
+
+int main() {
+    return action();
+}

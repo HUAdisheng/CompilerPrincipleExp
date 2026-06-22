@@ -1,0 +1,9 @@
+void action() {
+    return;
+}
+
+int main() {
+    if (action())
+        return 1;
+    return 0;
+}

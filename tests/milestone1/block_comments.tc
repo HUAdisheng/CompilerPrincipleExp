@@ -1,0 +1,8 @@
+/*
+ * A block comment may contain stars ** and slashes / as long as it does not
+ * contain the closing delimiter.
+ */
+int main() {
+    /* Inline block comment. */
+    return 17;
+}

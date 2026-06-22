@@ -1,0 +1,17 @@
+int main() {
+    int outer = 0;
+    int total = 0;
+    while (outer < 4) {
+        outer = outer + 1;
+        int inner = 0;
+        while (inner < 5) {
+            inner = inner + 1;
+            if (inner == 2)
+                continue;
+            if (inner == 5)
+                break;
+            total = total + 1;
+        }
+    }
+    return total;
+}

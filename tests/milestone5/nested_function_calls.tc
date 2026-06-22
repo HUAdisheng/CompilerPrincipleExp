@@ -1,0 +1,11 @@
+int increment(int value) {
+    return value + 1;
+}
+
+int add(int left, int right) {
+    return left + right;
+}
+
+int main() {
+    return add(increment(10), increment(increment(20)));
+}

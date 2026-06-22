@@ -1,4 +1,5 @@
 %option noyywrap nounput noinput yylineno
+%x BLOCK_COMMENT
 
 %{
 #include "parser.hpp"
@@ -17,7 +18,14 @@ NUMBER      0|[1-9][0-9]*
 
 {WHITESPACE}            ;
 "//"[^\r\n]*            ;
-"/*"([^*]|\*+[^*/])*\*+"/" ;
+"/*"                    BEGIN(BLOCK_COMMENT);
+<BLOCK_COMMENT>"*/"     BEGIN(INITIAL);
+<BLOCK_COMMENT>\n       ;
+<BLOCK_COMMENT>.        ;
+<BLOCK_COMMENT><<EOF>>  {
+                            std::cerr << "unterminated block comment\n";
+                            return YYUNDEF;
+                        }
 
 "const"                 return CONST;
 "int"                   return INT;

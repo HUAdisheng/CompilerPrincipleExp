@@ -1,0 +1,14 @@
+int counter = 0;
+
+int increment() {
+    counter = counter + 1;
+    return counter;
+}
+
+int main() {
+    int a = 0 && increment();
+    int b = 1 || increment();
+    int c = 1 && increment();
+    int d = 0 || increment();
+    return counter + a + b + c + d;
+}

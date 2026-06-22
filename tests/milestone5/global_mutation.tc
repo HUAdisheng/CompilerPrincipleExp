@@ -1,0 +1,11 @@
+int counter = 3;
+
+void add(int amount) {
+    counter = counter + amount;
+    return;
+}
+
+int main() {
+    add(6);
+    return counter;
+}

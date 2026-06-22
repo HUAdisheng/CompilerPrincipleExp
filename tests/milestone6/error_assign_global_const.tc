@@ -1,0 +1,6 @@
+const int value = 3;
+
+int main() {
+    value = 4;
+    return value;
+}

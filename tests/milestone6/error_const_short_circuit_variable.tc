@@ -1,0 +1,5 @@
+int main() {
+    int runtime_value = 0;
+    const int invalid = 1 || runtime_value;
+    return invalid;
+}

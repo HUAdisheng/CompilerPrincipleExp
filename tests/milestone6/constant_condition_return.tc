@@ -1,0 +1,9 @@
+int choose() {
+    const int enabled = 1;
+    if (enabled)
+        return 6;
+}
+
+int main() {
+    return choose();
+}

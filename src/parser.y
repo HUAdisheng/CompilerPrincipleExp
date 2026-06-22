@@ -97,8 +97,8 @@ class TopLevelItem;
 
 %start compilation_unit
 
-%nonassoc LOWER_THAN_ELSE
-%nonassoc ELSE
+%precedence LOWER_THAN_ELSE
+%precedence ELSE
 
 %%
 

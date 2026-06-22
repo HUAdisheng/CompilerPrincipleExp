@@ -1,0 +1,6 @@
+int runtime_value = 0;
+int invalid = 1 || runtime_value;
+
+int main() {
+    return invalid;
+}

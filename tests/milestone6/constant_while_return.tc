@@ -1,0 +1,9 @@
+int loop_return() {
+    while (1) {
+        return 9;
+    }
+}
+
+int main() {
+    return loop_return();
+}

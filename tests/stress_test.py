@@ -1,14 +1,14 @@
 # ============================================================
 # ToyC 压力测试 / 随机程序生成器
-# 用法: python3 tests/stress_test.py [compiler_path] [count]
+# 用法: python3 tests/stress_test.py [compiler_path] [count] [seed]
 #
 # 原理:
 #   1. 随机生成合法的 ToyC 程序
 #   2. 同时用 gcc 编译 (得到"正确答案"的退出码)
-#   3. 用本编译器编译 + spike 执行 (得到"待测"的退出码)
+#   3. 用本编译器生成 RV32 汇编, clang/lld 链接并用 qemu-riscv32 执行
 #   4. 比较两者, 不一致则报告
 #
-# 依赖: python3, gcc, riscv64-unknown-elf-gcc, spike
+# 依赖: python3, gcc, clang, ld.lld, qemu-riscv32
 # ============================================================
 
 import subprocess
@@ -20,6 +20,7 @@ import shutil
 
 COMPILER = sys.argv[1] if len(sys.argv) > 1 else "./build/compiler"
 COUNT = int(sys.argv[2]) if len(sys.argv) > 2 else 50
+SEED = int(sys.argv[3]) if len(sys.argv) > 3 else None
 PROJECT_DIR = os.path.dirname(os.path.abspath(__file__)) + "/.."
 RUNTIME_DIR = os.path.join(PROJECT_DIR, "tests", "runtime")
 
@@ -27,7 +28,8 @@ RUNTIME_DIR = os.path.join(PROJECT_DIR, "tests", "runtime")
 def check_bin(name):
     return shutil.which(name) is not None
 
-HAS_RISCV = check_bin("riscv64-unknown-elf-gcc") and check_bin("spike")
+HAS_RISCV = (check_bin("clang") and check_bin("ld.lld") and
+             check_bin("qemu-riscv32"))
 HAS_GCC = check_bin("gcc")
 
 class ToyCGenerator:
@@ -52,8 +54,8 @@ class ToyCGenerator:
             # 字面量
             return self.gen_number()
         elif choice < 0.25:
-            # 变量引用
-            return chr(random.choice([ord('a')+i for i in range(26)]))
+            # 当前表达式生成器不携带作用域信息，使用字面量避免生成未声明变量
+            return self.gen_number()
         elif choice < 0.35:
             # 括号
             return f"({self.gen_expr(depth + 1)})"
@@ -64,7 +66,8 @@ class ToyCGenerator:
         elif choice < 0.65:
             # 一元运算
             op = random.choice(["+", "-", "!"])
-            return f"{op}{self.gen_expr(depth + 1)}"
+            # 加括号可避免 “-” 与负字面量拼成 C 的自减记号，例如 --83
+            return f"{op}({self.gen_expr(depth + 1)})"
         elif choice < 0.75:
             # 逻辑运算
             op = random.choice(["&&", "||"])
@@ -152,6 +155,9 @@ class ToyCGenerator:
 
     def generate(self) -> str:
         """生成一个完整程序"""
+        # 每个程序都是独立编译单元，不能沿用上一轮生成的函数声明。
+        self.used_funcs.clear()
+
         # 可选: 生成辅助函数
         helpers = []
         if random.random() < 0.3:
@@ -198,7 +204,7 @@ def get_gcc_exit_code(source: str) -> tuple[int, str]:
 
 
 def get_toyc_exit_code(source: str) -> tuple[int, str]:
-    """用 ToyC 编译器编译, spike 执行, 获取退出码"""
+    """用 ToyC 编译器编译, qemu-riscv32 执行, 获取退出码"""
     # Step 1: ToyC → RISC-V asm
     result = subprocess.run([COMPILER],
                             input=source, capture_output=True, text=True, timeout=10)
@@ -208,6 +214,8 @@ def get_toyc_exit_code(source: str) -> tuple[int, str]:
     asm = result.stdout
     tmpdir = tempfile.mkdtemp()
     asm_path = os.path.join(tmpdir, "out.s")
+    start_obj_path = os.path.join(tmpdir, "linux_start.o")
+    asm_obj_path = os.path.join(tmpdir, "out.o")
     elf_path = os.path.join(tmpdir, "out.elf")
     start_path = os.path.join(RUNTIME_DIR, "linux_start.s")
 
@@ -215,28 +223,41 @@ def get_toyc_exit_code(source: str) -> tuple[int, str]:
         with open(asm_path, 'w') as f:
             f.write(asm)
 
-        # Step 2: asm → elf
-        subprocess.run(["riscv64-unknown-elf-gcc",
-                        "-nostdlib", start_path, asm_path, "-o", elf_path],
+        # Step 2: RV32 汇编 → 静态 Linux ELF
+        subprocess.run(["clang", "--target=riscv32-linux-gnu", "-c",
+                        start_path, "-o", start_obj_path],
+                       capture_output=True, check=True, timeout=10)
+        subprocess.run(["clang", "--target=riscv32-linux-gnu", "-c",
+                        asm_path, "-o", asm_obj_path],
+                       capture_output=True, check=True, timeout=10)
+        subprocess.run(["ld.lld", "-m", "elf32lriscv", "-static",
+                        "-e", "_start", start_obj_path, asm_obj_path,
+                        "-o", elf_path],
                        capture_output=True, check=True, timeout=10)
 
-        # Step 3: spike 执行
-        result = subprocess.run(["spike", "pk", elf_path],
+        # Step 3: qemu-riscv32 执行
+        result = subprocess.run(["qemu-riscv32", elf_path],
                                 capture_output=True, timeout=10)
         return (result.returncode & 0xFF, "")
     except subprocess.TimeoutExpired:
-        return (-4, "spike 超时")
+        return (-4, "RISC-V 编译或执行超时")
     except subprocess.CalledProcessError as e:
-        return (-5, f"链接/执行失败: {e.stderr[:100] if e.stderr else 'unknown'}")
+        stderr = e.stderr.decode(errors="replace") if isinstance(e.stderr, bytes) else e.stderr
+        return (-5, f"汇编或链接失败: {stderr[:100] if stderr else 'unknown'}")
     finally:
         shutil.rmtree(tmpdir, ignore_errors=True)
 
 
 def main():
+    if SEED is not None:
+        random.seed(SEED)
+
     print("=" * 50)
     print("  ToyC 压力测试 / 对拍")
     print("  compiler:", COMPILER)
     print(f"  生成 {COUNT} 个随机程序")
+    if SEED is not None:
+        print(f"  随机种子: {SEED}")
     print("=" * 50)
     print()
 
@@ -244,7 +265,7 @@ def main():
         print("[SKIP] gcc 不可用, 需要 gcc 做对拍")
         return
     if not HAS_RISCV:
-        print("[SKIP] RISC-V 工具链不可用, 需要 riscv-gcc + spike 执行")
+        print("[SKIP] RISC-V 工具链不可用, 需要 clang + ld.lld + qemu-riscv32")
         return
 
     gen = ToyCGenerator()

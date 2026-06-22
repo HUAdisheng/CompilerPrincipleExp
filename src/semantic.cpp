@@ -50,6 +50,7 @@ private:
     std::vector<Scope> scopes_;
     std::unordered_set<std::string> occupiedGlobalNames_;
     std::unordered_map<std::string, FunctionSignature> visibleFunctions_;
+    std::unordered_map<const Expr*, std::int32_t> constantConditions_;
     ValueType currentReturnType_ = ValueType::Void;
     std::string currentFunctionName_;
     int loopDepth_ = 0;
@@ -80,10 +81,15 @@ private:
             addDiagnostic(decl.init->location, "global initializer must have int type");
         }
 
+        if (!isConstExpression(*decl.init)) {
+            addDiagnostic(decl.init->location,
+                          "global initializer must be a compile-time constant expression");
+            return;
+        }
         const auto initValue = evaluateConstExpr(*decl.init);
         if (!initValue.ok) {
             addDiagnostic(decl.init->location,
-                          "global initializer must be a compile-time constant expression");
+                          "global initializer must be a valid constant expression");
             return;
         }
 
@@ -366,6 +372,33 @@ private:
         return ConstEvalResult{};
     }
 
+    bool isConstExpression(const Expr& expr) const {
+        if (dynamic_cast<const IntLiteral*>(&expr) != nullptr) {
+            return true;
+        }
+
+        if (const auto* identifier = dynamic_cast<const IdentifierExpr*>(&expr)) {
+            for (auto it = scopes_.rbegin(); it != scopes_.rend(); ++it) {
+                const auto found = it->variables.find(identifier->name);
+                if (found != it->variables.end()) {
+                    return found->second.isConst && found->second.hasConstValue;
+                }
+            }
+            return result_.program.globalConsts.contains(identifier->name);
+        }
+
+        if (const auto* unary = dynamic_cast<const UnaryExpr*>(&expr)) {
+            return isConstExpression(*unary->operand);
+        }
+
+        if (const auto* binary = dynamic_cast<const BinaryExpr*>(&expr)) {
+            return isConstExpression(*binary->lhs) &&
+                   isConstExpression(*binary->rhs);
+        }
+
+        return false;
+    }
+
     void analyzeBlock(const BlockStmt& block, bool createScope) {
         if (createScope) {
             pushScope();
@@ -418,6 +451,10 @@ private:
             if (analyzeExpr(*ifStmt->condition) != ValueType::Int) {
                 addDiagnostic(ifStmt->condition->location, "if condition must have int type");
             }
+            const auto conditionValue = evaluateConstExpr(*ifStmt->condition);
+            if (conditionValue.ok) {
+                constantConditions_.emplace(ifStmt->condition.get(), conditionValue.value);
+            }
             analyzeStmt(*ifStmt->thenBranch);
             if (ifStmt->elseBranch) {
                 analyzeStmt(*ifStmt->elseBranch);
@@ -428,6 +465,10 @@ private:
         if (const auto* whileStmt = dynamic_cast<const WhileStmt*>(&stmt)) {
             if (analyzeExpr(*whileStmt->condition) != ValueType::Int) {
                 addDiagnostic(whileStmt->condition->location, "while condition must have int type");
+            }
+            const auto conditionValue = evaluateConstExpr(*whileStmt->condition);
+            if (conditionValue.ok) {
+                constantConditions_.emplace(whileStmt->condition.get(), conditionValue.value);
             }
             ++loopDepth_;
             analyzeStmt(*whileStmt->body);
@@ -477,13 +518,18 @@ private:
         VariableInfo info;
         info.isConst = decl.isConst;
         if (decl.isConst) {
-            const auto initValue = evaluateConstExpr(*decl.init);
-            if (!initValue.ok) {
+            if (!isConstExpression(*decl.init)) {
                 addDiagnostic(decl.init->location,
                               "const initializer must be a compile-time constant expression");
             } else {
-                info.hasConstValue = true;
-                info.constValue = initValue.value;
+                const auto initValue = evaluateConstExpr(*decl.init);
+                if (!initValue.ok) {
+                    addDiagnostic(decl.init->location,
+                                  "const initializer must be a valid constant expression");
+                } else {
+                    info.hasConstValue = true;
+                    info.constValue = initValue.value;
+                }
             }
         }
 
@@ -505,8 +551,22 @@ private:
         }
 
         if (const auto* ifStmt = dynamic_cast<const IfStmt*>(&stmt)) {
+            const auto constant = constantConditions_.find(ifStmt->condition.get());
+            if (constant != constantConditions_.end()) {
+                if (constant->second != 0) {
+                    return stmtAlwaysReturns(*ifStmt->thenBranch);
+                }
+                return ifStmt->elseBranch != nullptr &&
+                       stmtAlwaysReturns(*ifStmt->elseBranch);
+            }
             return ifStmt->elseBranch != nullptr && stmtAlwaysReturns(*ifStmt->thenBranch) &&
                    stmtAlwaysReturns(*ifStmt->elseBranch);
+        }
+
+        if (const auto* whileStmt = dynamic_cast<const WhileStmt*>(&stmt)) {
+            const auto constant = constantConditions_.find(whileStmt->condition.get());
+            return constant != constantConditions_.end() && constant->second != 0 &&
+                   stmtAlwaysReturns(*whileStmt->body);
         }
 
         return false;

@@ -1,0 +1,11 @@
+void action() {
+    return;
+}
+
+int identity(int value) {
+    return value;
+}
+
+int main() {
+    return identity(action());
+}

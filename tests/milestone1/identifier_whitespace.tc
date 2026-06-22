@@ -1,0 +1,12 @@
+int _Value9() {
+    return 11;
+}
+
+int
+main
+(
+)
+{
+    int mixed_CASE_2 = _Value9();
+    return mixed_CASE_2;
+}

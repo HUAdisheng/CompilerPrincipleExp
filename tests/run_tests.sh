@@ -18,7 +18,7 @@ has_line() {
     local pattern="$1"
     local file="$2"
 
-    if command -v rg >/dev/null 2>&1; then
+    if command -v rg >/dev/null 2>&1 && rg --version >/dev/null 2>&1; then
         rg -q "$pattern" "$file"
     else
         grep -Eq "$pattern" "$file"
@@ -29,7 +29,7 @@ has_fixed_text() {
     local text="$1"
     local file="$2"
 
-    if command -v rg >/dev/null 2>&1; then
+    if command -v rg >/dev/null 2>&1 && rg --version >/dev/null 2>&1; then
         rg -F -q "$text" "$file"
     else
         grep -Fq "$text" "$file"

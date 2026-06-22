@@ -1,0 +1,7 @@
+const int first = 2;
+const int second = first * 3;
+int value = second + 1;
+
+int main() {
+    return value;
+}

@@ -1,0 +1,9 @@
+int read() {
+    return later;
+}
+
+int later = 5;
+
+int main() {
+    return read();
+}

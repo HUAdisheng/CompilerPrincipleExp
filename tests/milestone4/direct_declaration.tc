@@ -1,0 +1,10 @@
+int main() {
+    if (1)
+        int x = 7;
+
+    int i = 0;
+    while (i)
+        int y = 9;
+
+    return x;
+}
