@@ -1,0 +1,14 @@
+tests/milestone6/error_break_outside.tc|break can only appear inside a loop
+tests/milestone6/error_continue_outside.tc|continue can only appear inside a loop
+tests/milestone6/error_assign_const.tc|cannot assign to const identifier a
+tests/milestone6/error_undeclared.tc|use of undeclared identifier x
+tests/milestone6/error_call_before_definition.tc|call to function f before its definition or to an undeclared function
+tests/milestone6/error_missing_main.tc|missing entry function main
+tests/milestone6/error_bad_main_signature.tc|main must have type int main()
+tests/milestone6/error_missing_return.tc|int function f must return a value on all paths
+tests/milestone6/error_void_return_value.tc|void function f cannot return a value
+tests/milestone6/error_const_init_nonconst.tc|const initializer must be a compile-time constant expression
+tests/milestone6/error_global_init_nonconst.tc|global initializer must be a compile-time constant expression
+tests/milestone6/error_redefine_global.tc|redefinition of global name a
+tests/milestone6/error_redefine_local.tc|redefinition of local name a
+tests/milestone6/error_param_count.tc|function f expects 2 arguments
