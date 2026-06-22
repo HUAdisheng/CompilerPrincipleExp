@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <limits>
 #include <ostream>
 #include <stdexcept>
 #include <string>
@@ -258,6 +259,14 @@ private:
         }
 
         if (const auto* assign = dynamic_cast<const AssignStmt*>(&stmt)) {
+            if (options_.enableOpt) {
+                std::int32_t value = 0;
+                if (tryEvaluateConstExpr(*assign->value, value)) {
+                    emitLoadImmediate("a0", value);
+                    emitStore(assign->name);
+                    return;
+                }
+            }
             emitExpr(*assign->value);
             emitStore(assign->name);
             return;
@@ -269,6 +278,18 @@ private:
         }
 
         if (const auto* ifStmt = dynamic_cast<const IfStmt*>(&stmt)) {
+            if (options_.enableOpt) {
+                std::int32_t conditionValue = 0;
+                if (tryEvaluateConstExpr(*ifStmt->condition, conditionValue)) {
+                    if (conditionValue != 0) {
+                        emitStmt(*ifStmt->thenBranch);
+                    } else if (ifStmt->elseBranch != nullptr) {
+                        emitStmt(*ifStmt->elseBranch);
+                    }
+                    return;
+                }
+            }
+
             const std::string elseLabel = nextLabel("if_else");
             const std::string endLabel = nextLabel("if_end");
             emitExpr(*ifStmt->condition);
@@ -284,14 +305,31 @@ private:
         }
 
         if (const auto* whileStmt = dynamic_cast<const WhileStmt*>(&stmt)) {
+            if (options_.enableOpt) {
+                std::int32_t conditionValue = 0;
+                if (tryEvaluateConstExpr(*whileStmt->condition, conditionValue)) {
+                    if (conditionValue == 0) {
+                        return;
+                    }
+
+                    const std::string headLabel = nextLabel("while_head");
+                    const std::string endLabel = nextLabel("while_end");
+                    loopLabels_.push_back({headLabel, endLabel});
+                    emitLine(headLabel + ":");
+                    emitStmt(*whileStmt->body);
+                    emitLine("    j " + headLabel);
+                    emitLine(endLabel + ":");
+                    loopLabels_.pop_back();
+                    return;
+                }
+            }
+
             const std::string headLabel = nextLabel("while_head");
-            const std::string bodyLabel = nextLabel("while_body");
             const std::string endLabel = nextLabel("while_end");
             loopLabels_.push_back({headLabel, endLabel});
             emitLine(headLabel + ":");
             emitExpr(*whileStmt->condition);
             emitLine("    beqz a0, " + endLabel);
-            emitLine(bodyLabel + ":");
             emitStmt(*whileStmt->body);
             emitLine("    j " + headLabel);
             emitLine(endLabel + ":");
@@ -330,10 +368,21 @@ private:
             scopes_.back().emplace(
                 decl.name, Binding{Binding::Kind::LocalConst, offsetIt->second, value});
             if (!options_.enableOpt) {
-                emitLine("    li a0, " + std::to_string(value));
+                emitLoadImmediate("a0", value);
                 emitStoreWord("a0", offsetIt->second, "s0");
             }
             return;
+        }
+
+        if (options_.enableOpt) {
+            std::int32_t value = 0;
+            if (tryEvaluateConstExpr(*decl.init, value)) {
+                emitLoadImmediate("a0", value);
+                emitStoreWord("a0", offsetIt->second, "s0");
+                scopes_.back().emplace(
+                    decl.name, Binding{Binding::Kind::LocalVar, offsetIt->second, 0});
+                return;
+            }
         }
 
         emitExpr(*decl.init);
@@ -342,9 +391,10 @@ private:
             decl.name, Binding{Binding::Kind::LocalVar, offsetIt->second, 0});
     }
 
-    std::int32_t evaluateConstExpr(const Expr& expr) const {
+    bool tryEvaluateConstExpr(const Expr& expr, std::int32_t& value) const {
         if (const auto* literal = dynamic_cast<const IntLiteral*>(&expr)) {
-            return literal->value;
+            value = literal->value;
+            return true;
         }
 
         if (const auto* identifier = dynamic_cast<const IdentifierExpr*>(&expr)) {
@@ -352,80 +402,144 @@ private:
             if (binding != nullptr &&
                 (binding->kind == Binding::Kind::LocalConst ||
                  binding->kind == Binding::Kind::GlobalConst)) {
-                return binding->constValue;
+                value = binding->constValue;
+                return true;
             }
+            return false;
         }
 
         if (const auto* unary = dynamic_cast<const UnaryExpr*>(&expr)) {
-            const auto operand = evaluateConstExpr(*unary->operand);
+            std::int32_t operand = 0;
+            if (!tryEvaluateConstExpr(*unary->operand, operand)) {
+                return false;
+            }
             switch (unary->op) {
                 case UnaryOp::Plus:
-                    return operand;
+                    value = operand;
+                    return true;
                 case UnaryOp::Minus:
-                    return static_cast<std::int32_t>(0U - static_cast<std::uint32_t>(operand));
+                    value =
+                        static_cast<std::int32_t>(0U - static_cast<std::uint32_t>(operand));
+                    return true;
                 case UnaryOp::LogicalNot:
-                    return operand == 0 ? 1 : 0;
+                    value = operand == 0 ? 1 : 0;
+                    return true;
             }
         }
 
         const auto* binary = dynamic_cast<const BinaryExpr*>(&expr);
         if (binary == nullptr) {
-            return 0;
+            return false;
         }
 
         if (binary->op == BinaryOp::LogicalAnd) {
-            const auto lhs = evaluateConstExpr(*binary->lhs);
-            if (lhs == 0) {
-                return 0;
+            std::int32_t lhs = 0;
+            if (!tryEvaluateConstExpr(*binary->lhs, lhs)) {
+                return false;
             }
-            return evaluateConstExpr(*binary->rhs) != 0 ? 1 : 0;
+            if (lhs == 0) {
+                value = 0;
+                return true;
+            }
+            std::int32_t rhs = 0;
+            if (!tryEvaluateConstExpr(*binary->rhs, rhs)) {
+                return false;
+            }
+            value = rhs != 0 ? 1 : 0;
+            return true;
         }
 
         if (binary->op == BinaryOp::LogicalOr) {
-            const auto lhs = evaluateConstExpr(*binary->lhs);
-            if (lhs != 0) {
-                return 1;
+            std::int32_t lhs = 0;
+            if (!tryEvaluateConstExpr(*binary->lhs, lhs)) {
+                return false;
             }
-            return evaluateConstExpr(*binary->rhs) != 0 ? 1 : 0;
+            if (lhs != 0) {
+                value = 1;
+                return true;
+            }
+            std::int32_t rhs = 0;
+            if (!tryEvaluateConstExpr(*binary->rhs, rhs)) {
+                return false;
+            }
+            value = rhs != 0 ? 1 : 0;
+            return true;
         }
 
-        const auto lhs = evaluateConstExpr(*binary->lhs);
-        const auto rhs = evaluateConstExpr(*binary->rhs);
+        std::int32_t lhs = 0;
+        std::int32_t rhs = 0;
+        if (!tryEvaluateConstExpr(*binary->lhs, lhs) ||
+            !tryEvaluateConstExpr(*binary->rhs, rhs)) {
+            return false;
+        }
         switch (binary->op) {
             case BinaryOp::Add:
-                return static_cast<std::int32_t>(static_cast<std::uint32_t>(lhs) +
-                                                 static_cast<std::uint32_t>(rhs));
+                value = static_cast<std::int32_t>(static_cast<std::uint32_t>(lhs) +
+                                                  static_cast<std::uint32_t>(rhs));
+                return true;
             case BinaryOp::Sub:
-                return static_cast<std::int32_t>(static_cast<std::uint32_t>(lhs) -
-                                                 static_cast<std::uint32_t>(rhs));
+                value = static_cast<std::int32_t>(static_cast<std::uint32_t>(lhs) -
+                                                  static_cast<std::uint32_t>(rhs));
+                return true;
             case BinaryOp::Mul:
-                return static_cast<std::int32_t>(lhs * rhs);
+                value = static_cast<std::int32_t>(lhs * rhs);
+                return true;
             case BinaryOp::Div:
-                return static_cast<std::int32_t>(lhs / rhs);
+                if (rhs == 0) {
+                    return false;
+                }
+                value = static_cast<std::int32_t>(lhs / rhs);
+                return true;
             case BinaryOp::Mod:
-                return static_cast<std::int32_t>(lhs % rhs);
+                if (rhs == 0) {
+                    return false;
+                }
+                value = static_cast<std::int32_t>(lhs % rhs);
+                return true;
             case BinaryOp::Less:
-                return lhs < rhs ? 1 : 0;
+                value = lhs < rhs ? 1 : 0;
+                return true;
             case BinaryOp::Greater:
-                return lhs > rhs ? 1 : 0;
+                value = lhs > rhs ? 1 : 0;
+                return true;
             case BinaryOp::LessEqual:
-                return lhs <= rhs ? 1 : 0;
+                value = lhs <= rhs ? 1 : 0;
+                return true;
             case BinaryOp::GreaterEqual:
-                return lhs >= rhs ? 1 : 0;
+                value = lhs >= rhs ? 1 : 0;
+                return true;
             case BinaryOp::Equal:
-                return lhs == rhs ? 1 : 0;
+                value = lhs == rhs ? 1 : 0;
+                return true;
             case BinaryOp::NotEqual:
-                return lhs != rhs ? 1 : 0;
+                value = lhs != rhs ? 1 : 0;
+                return true;
             case BinaryOp::LogicalAnd:
             case BinaryOp::LogicalOr:
                 break;
         }
-        return 0;
+        return false;
+    }
+
+    std::int32_t evaluateConstExpr(const Expr& expr) const {
+        std::int32_t value = 0;
+        if (!tryEvaluateConstExpr(expr, value)) {
+            throw std::runtime_error("expected constant expression");
+        }
+        return value;
     }
 
     void emitExpr(const Expr& expr) {
+        if (options_.enableOpt) {
+            std::int32_t value = 0;
+            if (tryEvaluateConstExpr(expr, value)) {
+                emitLoadImmediate("a0", value);
+                return;
+            }
+        }
+
         if (const auto* literal = dynamic_cast<const IntLiteral*>(&expr)) {
-            emitLine("    li a0, " + std::to_string(literal->value));
+            emitLoadImmediate("a0", literal->value);
             return;
         }
 
@@ -450,6 +564,10 @@ private:
         }
 
         if (const auto* binary = dynamic_cast<const BinaryExpr*>(&expr)) {
+            if (options_.enableOpt && emitOptimizedBinary(*binary)) {
+                return;
+            }
+
             if (binary->op == BinaryOp::LogicalAnd) {
                 const std::string falseLabel = nextLabel("land_false");
                 const std::string endLabel = nextLabel("land_end");
@@ -482,49 +600,8 @@ private:
             pushA0();
             emitExpr(*binary->rhs);
             popToT0();
-
-            switch (binary->op) {
-                case BinaryOp::Add:
-                    emitLine("    add a0, t0, a0");
-                    return;
-                case BinaryOp::Sub:
-                    emitLine("    sub a0, t0, a0");
-                    return;
-                case BinaryOp::Mul:
-                    emitLine("    mul a0, t0, a0");
-                    return;
-                case BinaryOp::Div:
-                    emitLine("    div a0, t0, a0");
-                    return;
-                case BinaryOp::Mod:
-                    emitLine("    rem a0, t0, a0");
-                    return;
-                case BinaryOp::Less:
-                    emitLine("    slt a0, t0, a0");
-                    return;
-                case BinaryOp::Greater:
-                    emitLine("    slt a0, a0, t0");
-                    return;
-                case BinaryOp::LessEqual:
-                    emitLine("    slt a0, a0, t0");
-                    emitLine("    xori a0, a0, 1");
-                    return;
-                case BinaryOp::GreaterEqual:
-                    emitLine("    slt a0, t0, a0");
-                    emitLine("    xori a0, a0, 1");
-                    return;
-                case BinaryOp::Equal:
-                    emitLine("    sub t1, t0, a0");
-                    emitLine("    seqz a0, t1");
-                    return;
-                case BinaryOp::NotEqual:
-                    emitLine("    sub t1, t0, a0");
-                    emitLine("    snez a0, t1");
-                    return;
-                case BinaryOp::LogicalAnd:
-                case BinaryOp::LogicalOr:
-                    break;
-            }
+            emitBinaryRegOp(binary->op, "t0", "a0");
+            return;
         }
 
         if (const auto* call = dynamic_cast<const CallExpr*>(&expr)) {
@@ -553,10 +630,307 @@ private:
         }
     }
 
+    bool emitOptimizedBinary(const BinaryExpr& binary) {
+        if (binary.op == BinaryOp::LogicalAnd) {
+            return emitOptimizedLogicalAnd(binary);
+        }
+
+        if (binary.op == BinaryOp::LogicalOr) {
+            return emitOptimizedLogicalOr(binary);
+        }
+
+        std::int32_t rhsConst = 0;
+        if (tryEvaluateConstExpr(*binary.rhs, rhsConst) &&
+            emitBinaryWithConst(binary.op, *binary.lhs, rhsConst, false)) {
+            return true;
+        }
+
+        std::int32_t lhsConst = 0;
+        if (tryEvaluateConstExpr(*binary.lhs, lhsConst) &&
+            emitBinaryWithConst(binary.op, *binary.rhs, lhsConst, true)) {
+            return true;
+        }
+
+        if (isLeafLikeExpr(*binary.rhs)) {
+            emitExpr(*binary.lhs);
+            emitMove("t3", "a0");
+            emitExpr(*binary.rhs);
+            emitBinaryRegOp(binary.op, "t3", "a0");
+            return true;
+        }
+
+        if (isLeafLikeExpr(*binary.lhs)) {
+            emitExpr(*binary.rhs);
+            emitMove("t3", "a0");
+            emitExpr(*binary.lhs);
+            emitBinaryRegOp(binary.op, "a0", "t3");
+            return true;
+        }
+
+        return false;
+    }
+
+    bool emitOptimizedLogicalAnd(const BinaryExpr& binary) {
+        std::int32_t lhsConst = 0;
+        if (tryEvaluateConstExpr(*binary.lhs, lhsConst)) {
+            if (lhsConst == 0) {
+                emitLoadImmediate("a0", 0);
+            } else {
+                emitExpr(*binary.rhs);
+                emitLine("    snez a0, a0");
+            }
+            return true;
+        }
+
+        std::int32_t rhsConst = 0;
+        if (tryEvaluateConstExpr(*binary.rhs, rhsConst)) {
+            emitExpr(*binary.lhs);
+            if (rhsConst == 0) {
+                emitLoadImmediate("a0", 0);
+            } else {
+                emitLine("    snez a0, a0");
+            }
+            return true;
+        }
+
+        return false;
+    }
+
+    bool emitOptimizedLogicalOr(const BinaryExpr& binary) {
+        std::int32_t lhsConst = 0;
+        if (tryEvaluateConstExpr(*binary.lhs, lhsConst)) {
+            if (lhsConst != 0) {
+                emitLoadImmediate("a0", 1);
+            } else {
+                emitExpr(*binary.rhs);
+                emitLine("    snez a0, a0");
+            }
+            return true;
+        }
+
+        std::int32_t rhsConst = 0;
+        if (tryEvaluateConstExpr(*binary.rhs, rhsConst)) {
+            emitExpr(*binary.lhs);
+            if (rhsConst != 0) {
+                emitLoadImmediate("a0", 1);
+            } else {
+                emitLine("    snez a0, a0");
+            }
+            return true;
+        }
+
+        return false;
+    }
+
+    bool emitBinaryWithConst(BinaryOp op, const Expr& otherExpr, std::int32_t constant,
+                             bool constantOnLhs) {
+        emitExpr(otherExpr);
+
+        switch (op) {
+            case BinaryOp::Add:
+                if (!constantOnLhs && fitsI12(constant)) {
+                    emitAddImmediate("a0", "a0", constant);
+                } else {
+                    emitLoadImmediate("t0", constant);
+                    emitLine("    add a0, a0, t0");
+                }
+                return true;
+
+            case BinaryOp::Sub:
+                if (!constantOnLhs && constant != std::numeric_limits<std::int32_t>::min() &&
+                    fitsI12(-constant)) {
+                    emitAddImmediate("a0", "a0", -constant);
+                } else {
+                    emitLoadImmediate("t0", constant);
+                    if (constantOnLhs) {
+                        emitLine("    sub a0, t0, a0");
+                    } else {
+                        emitLine("    sub a0, a0, t0");
+                    }
+                }
+                return true;
+
+            case BinaryOp::Mul:
+                if (constant == 1) {
+                    return true;
+                }
+                if (constant == -1) {
+                    emitLine("    neg a0, a0");
+                    return true;
+                }
+                if (constant == 0) {
+                    emitLoadImmediate("a0", 0);
+                    return true;
+                }
+                emitLoadImmediate("t0", constant);
+                if (constantOnLhs) {
+                    emitLine("    mul a0, t0, a0");
+                } else {
+                    emitLine("    mul a0, a0, t0");
+                }
+                return true;
+
+            case BinaryOp::Div:
+                if (!constantOnLhs && constant == 1) {
+                    return true;
+                }
+                emitLoadImmediate("t0", constant);
+                if (constantOnLhs) {
+                    emitLine("    div a0, t0, a0");
+                } else {
+                    emitLine("    div a0, a0, t0");
+                }
+                return true;
+
+            case BinaryOp::Mod:
+                emitLoadImmediate("t0", constant);
+                if (constantOnLhs) {
+                    emitLine("    rem a0, t0, a0");
+                } else {
+                    emitLine("    rem a0, a0, t0");
+                }
+                return true;
+
+            case BinaryOp::Less:
+                if (!constantOnLhs && fitsI12(constant)) {
+                    emitLine("    slti a0, a0, " + std::to_string(constant));
+                } else {
+                    emitLoadImmediate("t0", constant);
+                    if (constantOnLhs) {
+                        emitLine("    slt a0, t0, a0");
+                    } else {
+                        emitLine("    slt a0, a0, t0");
+                    }
+                }
+                return true;
+
+            case BinaryOp::Greater:
+                emitLoadImmediate("t0", constant);
+                if (constantOnLhs) {
+                    emitLine("    slt a0, a0, t0");
+                } else {
+                    emitLine("    slt a0, t0, a0");
+                }
+                return true;
+
+            case BinaryOp::LessEqual:
+                emitLoadImmediate("t0", constant);
+                if (constantOnLhs) {
+                    emitLine("    slt a0, a0, t0");
+                } else {
+                    emitLine("    slt a0, t0, a0");
+                }
+                emitLine("    xori a0, a0, 1");
+                return true;
+
+            case BinaryOp::GreaterEqual:
+                if (!constantOnLhs && fitsI12(constant)) {
+                    emitLine("    slti a0, a0, " + std::to_string(constant));
+                    emitLine("    xori a0, a0, 1");
+                } else {
+                    emitLoadImmediate("t0", constant);
+                    if (constantOnLhs) {
+                        emitLine("    slt a0, t0, a0");
+                    } else {
+                        emitLine("    slt a0, a0, t0");
+                    }
+                    emitLine("    xori a0, a0, 1");
+                }
+                return true;
+
+            case BinaryOp::Equal:
+                if (constant == 0) {
+                    emitLine("    seqz a0, a0");
+                } else {
+                    emitLoadImmediate("t0", constant);
+                    emitLine("    sub t1, a0, t0");
+                    emitLine("    seqz a0, t1");
+                }
+                return true;
+
+            case BinaryOp::NotEqual:
+                if (constant == 0) {
+                    emitLine("    snez a0, a0");
+                } else {
+                    emitLoadImmediate("t0", constant);
+                    emitLine("    sub t1, a0, t0");
+                    emitLine("    snez a0, t1");
+                }
+                return true;
+
+            case BinaryOp::LogicalAnd:
+            case BinaryOp::LogicalOr:
+                return false;
+        }
+
+        return false;
+    }
+
+    void emitBinaryRegOp(BinaryOp op, const std::string& lhsReg, const std::string& rhsReg) {
+        switch (op) {
+            case BinaryOp::Add:
+                emitLine("    add a0, " + lhsReg + ", " + rhsReg);
+                return;
+            case BinaryOp::Sub:
+                emitLine("    sub a0, " + lhsReg + ", " + rhsReg);
+                return;
+            case BinaryOp::Mul:
+                emitLine("    mul a0, " + lhsReg + ", " + rhsReg);
+                return;
+            case BinaryOp::Div:
+                emitLine("    div a0, " + lhsReg + ", " + rhsReg);
+                return;
+            case BinaryOp::Mod:
+                emitLine("    rem a0, " + lhsReg + ", " + rhsReg);
+                return;
+            case BinaryOp::Less:
+                emitLine("    slt a0, " + lhsReg + ", " + rhsReg);
+                return;
+            case BinaryOp::Greater:
+                emitLine("    slt a0, " + rhsReg + ", " + lhsReg);
+                return;
+            case BinaryOp::LessEqual:
+                emitLine("    slt a0, " + rhsReg + ", " + lhsReg);
+                emitLine("    xori a0, a0, 1");
+                return;
+            case BinaryOp::GreaterEqual:
+                emitLine("    slt a0, " + lhsReg + ", " + rhsReg);
+                emitLine("    xori a0, a0, 1");
+                return;
+            case BinaryOp::Equal:
+                emitLine("    sub t1, " + lhsReg + ", " + rhsReg);
+                emitLine("    seqz a0, t1");
+                return;
+            case BinaryOp::NotEqual:
+                emitLine("    sub t1, " + lhsReg + ", " + rhsReg);
+                emitLine("    snez a0, t1");
+                return;
+            case BinaryOp::LogicalAnd:
+            case BinaryOp::LogicalOr:
+                return;
+        }
+    }
+
+    bool isLeafLikeExpr(const Expr& expr) const {
+        if (dynamic_cast<const IntLiteral*>(&expr) != nullptr) {
+            return true;
+        }
+
+        if (dynamic_cast<const IdentifierExpr*>(&expr) != nullptr) {
+            return true;
+        }
+
+        if (const auto* unary = dynamic_cast<const UnaryExpr*>(&expr)) {
+            return isLeafLikeExpr(*unary->operand);
+        }
+
+        return false;
+    }
+
     void emitLoad(const std::string& name) {
         const Binding* binding = lookupBinding(name);
         if (binding == nullptr) {
-            emitLine("    li a0, 0");
+            emitLoadImmediate("a0", 0);
             return;
         }
 
@@ -565,14 +939,14 @@ private:
                 emitLoadWord("a0", binding->offset, "s0");
                 return;
             case Binding::Kind::LocalConst:
-                emitLine("    li a0, " + std::to_string(binding->constValue));
+                emitLoadImmediate("a0", binding->constValue);
                 return;
             case Binding::Kind::GlobalVar:
                 emitLine("    la t0, " + name);
                 emitLine("    lw a0, 0(t0)");
                 return;
             case Binding::Kind::GlobalConst:
-                emitLine("    li a0, " + std::to_string(binding->constValue));
+                emitLoadImmediate("a0", binding->constValue);
                 return;
         }
     }
@@ -605,6 +979,17 @@ private:
     void popToT0() {
         emitLoadWord("t0", 0, "sp");
         releaseDynamicStack(4);
+    }
+
+    void emitLoadImmediate(const std::string& destination, std::int32_t value) {
+        emitLine("    li " + destination + ", " + std::to_string(value));
+    }
+
+    void emitMove(const std::string& destination, const std::string& source) {
+        if (destination == source) {
+            return;
+        }
+        emitLine("    mv " + destination + ", " + source);
     }
 
     void emitAdjustSp(int amount) {

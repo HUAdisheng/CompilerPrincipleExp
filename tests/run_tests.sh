@@ -57,9 +57,10 @@ run_elf_and_get_exit() {
 }
 
 run_valid_case() {
-    local line="$1"
+    local line="${1%$'\r'}"
     local rel="${line%%|*}"
     local expected="${line#*|}"
+    expected="${expected%$'\r'}"
     local src="$ROOT_DIR/$rel"
     local base
     base="$(basename "$src" .tc)"
@@ -136,9 +137,10 @@ run_valid_case() {
 }
 
 run_invalid_case() {
-    local line="$1"
+    local line="${1%$'\r'}"
     local rel="${line%%|*}"
     local expected="${line#*|}"
+    expected="${expected%$'\r'}"
     local src="$ROOT_DIR/$rel"
     local base
     base="$(basename "$src" .tc)"
