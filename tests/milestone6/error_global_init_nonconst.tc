@@ -1,0 +1,6 @@
+int g = h + 1;
+int h = 1;
+
+int main() {
+    return g;
+}

@@ -4,39 +4,77 @@
 
 namespace toyc {
 
-std::unique_ptr<Program> parsedProgram;
+std::unique_ptr<CompUnit> parsedProgram;
 
-IntLiteral::IntLiteral(std::int32_t value) : value_(value) {}
+IntLiteral::IntLiteral(std::int32_t literalValue) : value(literalValue) {}
 
-std::int32_t IntLiteral::constantValue() const {
-    return value_;
-}
+IdentifierExpr::IdentifierExpr(std::string identifierName)
+    : name(std::move(identifierName)) {}
 
-UnaryExpr::UnaryExpr(UnaryOp op, std::unique_ptr<Expr> operand)
-    : op_(op), operand_(std::move(operand)) {}
+UnaryExpr::UnaryExpr(UnaryOp unaryOp, Expr* subExpression)
+    : op(unaryOp), operand(subExpression) {}
 
-std::int32_t UnaryExpr::constantValue() const {
-    const auto value = operand_->constantValue();
-    switch (op_) {
-        case UnaryOp::Plus:
-            return value;
-        case UnaryOp::Minus:
-            return static_cast<std::int32_t>(0U - static_cast<std::uint32_t>(value));
-        case UnaryOp::LogicalNot:
-            return value == 0 ? 1 : 0;
+BinaryExpr::BinaryExpr(BinaryOp binaryOp, Expr* leftExpression, Expr* rightExpression)
+    : op(binaryOp), lhs(leftExpression), rhs(rightExpression) {}
+
+CallExpr::CallExpr(std::string calleeName, std::vector<Expr*>* rawArguments)
+    : callee(std::move(calleeName)) {
+    if (rawArguments != nullptr) {
+        arguments.reserve(rawArguments->size());
+        for (Expr* argument : *rawArguments) {
+            arguments.emplace_back(argument);
+        }
+        delete rawArguments;
     }
-    return 0;
 }
 
-Program::Program(std::string functionName, std::unique_ptr<Expr> returnExpr)
-    : functionName_(std::move(functionName)), returnExpr_(std::move(returnExpr)) {}
+Decl::Decl(bool constant, std::string declaredName, Expr* initExpression)
+    : isConst(constant), name(std::move(declaredName)), init(initExpression) {}
 
-const std::string& Program::functionName() const {
-    return functionName_;
+BlockStmt::BlockStmt(std::vector<Stmt*>* rawStatements) {
+    if (rawStatements != nullptr) {
+        statements.reserve(rawStatements->size());
+        for (Stmt* statement : *rawStatements) {
+            statements.emplace_back(statement);
+        }
+        delete rawStatements;
+    }
 }
 
-const Expr& Program::returnExpr() const {
-    return *returnExpr_;
+ExprStmt::ExprStmt(Expr* statementExpression) : expr(statementExpression) {}
+
+AssignStmt::AssignStmt(std::string targetName, Expr* valueExpression)
+    : name(std::move(targetName)), value(valueExpression) {}
+
+DeclStmt::DeclStmt(Decl* declaredItem) : decl(declaredItem) {}
+
+IfStmt::IfStmt(Expr* conditionExpr, Stmt* thenStatement, Stmt* elseStatement)
+    : condition(conditionExpr), thenBranch(thenStatement), elseBranch(elseStatement) {}
+
+WhileStmt::WhileStmt(Expr* conditionExpr, Stmt* bodyStatement)
+    : condition(conditionExpr), body(bodyStatement) {}
+
+ReturnStmt::ReturnStmt(Expr* returnExpression) : expr(returnExpression) {}
+
+GlobalDecl::GlobalDecl(Decl* declaredItem) : decl(declaredItem) {}
+
+FuncDef::FuncDef(ValueType declaredReturnType, std::string functionName,
+                 std::vector<std::string>* rawParameters, BlockStmt* functionBody)
+    : returnType(declaredReturnType), name(std::move(functionName)), body(functionBody) {
+    if (rawParameters != nullptr) {
+        params = std::move(*rawParameters);
+        delete rawParameters;
+    }
+}
+
+CompUnit::CompUnit(std::vector<TopLevelItem*>* rawItems) {
+    if (rawItems != nullptr) {
+        items.reserve(rawItems->size());
+        for (TopLevelItem* item : *rawItems) {
+            items.emplace_back(item);
+        }
+        delete rawItems;
+    }
 }
 
 }  // namespace toyc

@@ -1,11 +1,13 @@
 #pragma once
 
+#include "ast.hpp"
+#include "semantic.hpp"
+
 #include <iosfwd>
 
 namespace toyc {
 
-class Program;
-
-void generateRiscV(const Program& program, std::ostream& output);
+void generateRiscV(const CompUnit& program, const ProgramInfo& info,
+                   const CompileOptions& options, std::ostream& output);
 
 }  // namespace toyc

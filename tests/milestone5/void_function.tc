@@ -1,0 +1,8 @@
+void touch(int x) {
+    int y = x + 1;
+}
+
+int main() {
+    touch(3);
+    return 0;
+}

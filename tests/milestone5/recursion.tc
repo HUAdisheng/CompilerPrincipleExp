@@ -1,0 +1,8 @@
+int down(int x) {
+    if (x) return down(x - 1);
+    else return 0;
+}
+
+int main() {
+    return down(3);
+}

@@ -31,6 +31,7 @@ add_executable(
     compiler
     src/main.cpp
     src/ast.cpp
+    src/semantic.cpp
     src/codegen.cpp
     ${BISON_ToyCParser_OUTPUTS}
     ${FLEX_ToyCLexer_OUTPUTS}
