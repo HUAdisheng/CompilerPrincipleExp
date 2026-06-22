@@ -1,0 +1,10 @@
+void check(int x) {
+    if (x) return;
+    int y = 1;
+}
+
+int main() {
+    check(1);
+    check(0);
+    return 0;
+}

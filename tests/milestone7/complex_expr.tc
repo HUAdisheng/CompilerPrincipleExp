@@ -1,0 +1,6 @@
+int main() {
+    int a = 10;
+    int b = 3;
+    int c = 7;
+    return ((a + b) * c - a / b + c % b > a) && (a != b || b <= c && c >= a || a == 10);
+}

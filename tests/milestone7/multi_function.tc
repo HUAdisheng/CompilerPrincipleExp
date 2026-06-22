@@ -1,0 +1,15 @@
+int double_it(int x) {
+    return x + x;
+}
+
+int triple_it(int x) {
+    return x + x + x;
+}
+
+int combine(int x, int y) {
+    return double_it(x) + triple_it(y);
+}
+
+int main() {
+    return combine(3, 4);
+}
